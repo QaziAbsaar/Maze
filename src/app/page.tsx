@@ -24,6 +24,38 @@ const { r: END_NODE_ROW, c: END_NODE_COL } = getSafeTargetCoordinates(NUM_ROWS, 
 
 type NodeCoordinate = { row: number; col: number };
 
+const createInitialGrid = (): NodeData[][] => {
+  const initialGrid: NodeData[][] = [];
+  for (let row = 0; row < NUM_ROWS; row++) {
+    const currentRow: NodeData[] = [];
+    for (let col = 0; col < NUM_COLS; col++) {
+      currentRow.push({
+        row,
+        col,
+        isStart: row === START_NODE_ROW && col === START_NODE_COL,
+        isEnd: row === END_NODE_ROW && col === END_NODE_COL,
+        isWall: false,
+        isVisited: false,
+        isPath: false,
+        isFrontier: false,
+        distance: Infinity,
+        previousNode: null,
+        weight: 1,
+      });
+    }
+    initialGrid.push(currentRow);
+  }
+  return initialGrid;
+};
+
+const cloneGridForState = (sourceGrid: NodeData[][]): NodeData[][] =>
+  sourceGrid.map(row =>
+    row.map(node => ({
+      ...node,
+      previousNode: null,
+    }))
+  );
+
 export default function Home() {
   const [grid, setGrid] = useState<NodeData[][]>([]);
   const [isMousePressed, setIsMousePressed] = useState(false);
@@ -40,30 +72,18 @@ export default function Home() {
     pathLength: 0,
   });
   const [history, setHistory] = useState<any[]>([]);
+  const gridRef = useRef<NodeData[][]>([]);
+  const drawGridRef = useRef<((nextGrid: NodeData[][]) => void) | null>(null);
   const startNodeRef = useRef({ row: START_NODE_ROW, col: START_NODE_COL });
   const endNodeRef = useRef({ row: END_NODE_ROW, col: END_NODE_COL });
 
   const resetGrid = () => {
-    // Ensure refs are set to valid inner path coordinates
+    const initialGrid = createInitialGrid();
     startNodeRef.current = { row: START_NODE_ROW, col: START_NODE_COL };
     endNodeRef.current = { row: END_NODE_ROW, col: END_NODE_COL };
-    
-    const initialGrid = [];
-    for (let row = 0; row < NUM_ROWS; row++) {
-      const currentRow = [];
-      for (let col = 0; col < NUM_COLS; col++) {
-        currentRow.push({
-          row, col, 
-          isStart: row === START_NODE_ROW && col === START_NODE_COL,
-          isEnd: row === END_NODE_ROW && col === END_NODE_COL,
-          isWall: false, isVisited: false, isPath: false,
-          isFrontier: false,
-          distance: Infinity, previousNode: null, weight: 1
-        });
-      }
-      initialGrid.push(currentRow);
-    }
+    gridRef.current = initialGrid;
     setGrid(initialGrid);
+    drawGridRef.current?.(initialGrid);
   };
 
   useEffect(() => {
@@ -72,10 +92,17 @@ export default function Home() {
 
   const clearPath = () => {
     if (isRunning) return;
-    const newGrid = grid.map(row => 
-      row.map(node => ({ ...node, isVisited: false, isPath: false, distance: Infinity, previousNode: null }))
-    );
-    setGrid(newGrid);
+    for (let r = 0; r < NUM_ROWS; r++) {
+      for (let c = 0; c < NUM_COLS; c++) {
+        const node = gridRef.current[r][c];
+        node.isVisited = false;
+        node.isPath = false;
+        node.distance = Infinity;
+        node.previousNode = null;
+      }
+    }
+    drawGridRef.current?.(gridRef.current);
+    setGrid(cloneGridForState(gridRef.current));
   };
 
   const runPathfindingLocally = (
@@ -83,15 +110,7 @@ export default function Home() {
     startNode: NodeCoordinate,
     endNode: NodeCoordinate
   ) => {
-    const simulationGrid = grid.map(row =>
-      row.map(node => ({
-        ...node,
-        isVisited: false,
-        isPath: false,
-        distance: Infinity,
-        previousNode: null,
-      }))
-    );
+    const simulationGrid = cloneGridForState(gridRef.current);
 
     const start = simulationGrid[startNode.row]?.[startNode.col];
     const end = simulationGrid[endNode.row]?.[endNode.col];
@@ -122,6 +141,39 @@ export default function Home() {
     };
   };
 
+  const animateNodes = (
+    nodes: NodeCoordinate[],
+    updateNode: (node: NodeCoordinate) => void,
+    nodesPerFrame: number
+  ) =>
+    new Promise<void>(resolve => {
+      if (nodes.length === 0) {
+        resolve();
+        return;
+      }
+
+      let index = 0;
+
+      const frame = () => {
+        let processed = 0;
+        while (index < nodes.length && processed < nodesPerFrame) {
+          updateNode(nodes[index]);
+          index += 1;
+          processed += 1;
+        }
+
+        drawGridRef.current?.(gridRef.current);
+
+        if (index < nodes.length) {
+          requestAnimationFrame(frame);
+        } else {
+          resolve();
+        }
+      };
+
+      requestAnimationFrame(frame);
+    });
+
   const handleRunAlgorithm = async () => {
     if (isRunning) return;
     clearPath();
@@ -147,7 +199,7 @@ export default function Home() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            grid: grid.map(row => row.map(node => ({
+            grid: gridRef.current.map(row => row.map(node => ({
               row: node.row,
               col: node.col,
               isStart: node.isStart,
@@ -184,86 +236,79 @@ export default function Home() {
   };
 
   const animateAlgorithm = (visitedNodes: {row: number, col: number}[], pathNodes: {row: number, col: number}[], algoName: string, execTime: number) => {
-    if (visitedNodes.length === 0) {
-      setIsRunning(false);
-      return;
-    }
+    const run = async () => {
+      const visitedBatch = Math.max(4, Math.floor(44 - Math.min(speed, 40)));
+      const pathBatch = Math.max(2, Math.floor(28 - Math.min(speed, 20)));
 
-    for (let i = 0; i <= visitedNodes.length; i++) {
-      if (i === visitedNodes.length) {
-        setTimeout(() => {
-          animateShortestPath(pathNodes, algoName, execTime, visitedNodes.length);
-        }, 15 * i);
-        return;
-      }
-      setTimeout(() => {
-        const node = visitedNodes[i];
-        if (!node || !grid[node.row] || !grid[node.row][node.col]) return;
-        
-        if (!grid[node.row][node.col].isStart && !grid[node.row][node.col].isEnd) {
-          setGrid(prev => {
-            const newGrid = [...prev];
-            if (newGrid[node.row] && newGrid[node.row][node.col]) {
-              newGrid[node.row][node.col].isVisited = true;
-            }
-            return newGrid;
-          });
+      await animateNodes(
+        visitedNodes,
+        node => {
+          const current = gridRef.current[node.row]?.[node.col];
+          if (!current) return;
+          if (!current.isStart && !current.isEnd) {
+            current.isVisited = true;
+          }
+        },
+        visitedBatch
+      );
+
+      await animateShortestPath(pathNodes, algoName, execTime, visitedNodes.length, pathBatch);
+    };
+
+    void run();
+  };
+
+  const animateShortestPath = async (
+    pathNodes: {row: number, col: number}[],
+    algoName: string,
+    execTime: number,
+    nodesExplored: number,
+    pathBatch: number
+  ) => {
+    await animateNodes(
+      pathNodes,
+      node => {
+        const current = gridRef.current[node.row]?.[node.col];
+        if (!current) return;
+        if (!current.isStart && !current.isEnd) {
+          current.isPath = true;
         }
-      }, 15 * i); // 15ms per cell for smooth pathfinding animation
-    }
+      },
+      pathBatch
+    );
+
+    setIsRunning(false);
+    const newMetrics = {
+      algorithmUsed: algoName,
+      executionTimeMs: execTime,
+      nodesExplored,
+      pathLength: pathNodes.length,
+    };
+    setMetrics(newMetrics);
+    setHistory(prev => [newMetrics, ...prev]);
+    setGrid(cloneGridForState(gridRef.current));
   };
 
-  const animateShortestPath = (pathNodes: {row: number, col: number}[], algoName: string, execTime: number, nodesExplored: number) => {
-    for (let i = 0; i < pathNodes.length; i++) {
-        setTimeout(() => {
-          const node = pathNodes[i];
-          if (!node || !grid[node.row] || !grid[node.row][node.col]) return;
-          
-          if (!grid[node.row][node.col].isStart && !grid[node.row][node.col].isEnd) {
-             setGrid(prev => {
-               const newGrid = [...prev];
-               if (newGrid[node.row] && newGrid[node.row][node.col]) {
-                  newGrid[node.row][node.col].isPath = true;
-               }
-               return newGrid;
-             });
-          }
-          if (i === pathNodes.length - 1) {
-            setIsRunning(false);
-            const newMetrics = { algorithmUsed: algoName, executionTimeMs: execTime, nodesExplored, pathLength: pathNodes.length };
-            setMetrics(newMetrics);
-            setHistory(prev => [newMetrics, ...prev]);
-          }
-        }, 20 * i); // 20ms per path cell for smooth reveal
-    }
-    if (pathNodes.length === 0) {
-      setIsRunning(false);
-      const newMetrics = { algorithmUsed: algoName, executionTimeMs: execTime, nodesExplored, pathLength: 0 };
-      setMetrics(newMetrics);
-      setHistory(prev => [newMetrics, ...prev]);
-    }
-  };
-
-  const handleGenerateMaze = () => {
+  const handleGenerateMaze = (_mazeAlgorithm?: string) => {
     if (isRunning) return;
     setIsRunning(true);
 
-    // Create a fresh grid copy for maze generation
-    const newGrid = grid.map(row => row.map(node => ({ ...node })));
-    
-    // Clear any existing visited/path nodes from previous runs
     for (let r = 0; r < NUM_ROWS; r++) {
       for (let c = 0; c < NUM_COLS; c++) {
-        newGrid[r][c].isVisited = false;
-        newGrid[r][c].isPath = false;
-        newGrid[r][c].distance = Infinity;
-        newGrid[r][c].previousNode = null;
+        const node = gridRef.current[r][c];
+        node.isVisited = false;
+        node.isPath = false;
+        node.distance = Infinity;
+        node.previousNode = null;
+        node.isStart = false;
+        node.isEnd = false;
+        node.isWall = true;
       }
     }
+    drawGridRef.current?.(gridRef.current);
 
-    // Generate maze using DFS (Recursive Backtracker)
     const { wallsToAnimate, startRow, startCol, targetRow, targetCol } = generateDFSMaze(
-      newGrid,
+      gridRef.current,
       NUM_ROWS,
       NUM_COLS
     );
@@ -274,7 +319,6 @@ export default function Home() {
     let finalTargetCol = targetCol;
     
     if (wallsToAnimate.length > 0) {
-      // Pick a carved node that's at least 2/3 into the animation (deep in the maze)
       const targetIndex = Math.floor(wallsToAnimate.length * 0.7);
       const targetNode = wallsToAnimate[targetIndex];
       finalTargetRow = targetNode.row;
@@ -285,70 +329,46 @@ export default function Home() {
     startNodeRef.current = { row: startRow, col: startCol };
     endNodeRef.current = { row: finalTargetRow, col: finalTargetCol };
 
-    // Clear all previous start/end markers
-    for (let r = 0; r < NUM_ROWS; r++) {
-      for (let c = 0; c < NUM_COLS; c++) {
-        newGrid[r][c].isStart = false;
-        newGrid[r][c].isEnd = false;
-      }
-    }
-
-    // Set the new guaranteed safe start node
-    newGrid[startRow][startCol].isStart = true;
-    newGrid[startRow][startCol].isWall = false;
-
-    // Set the target to a node that was definitely carved
-    newGrid[finalTargetRow][finalTargetCol].isEnd = true;
-    newGrid[finalTargetRow][finalTargetCol].isWall = false;
-
-    // First, set the grid to all-walls state so the animation is visible
-    const wallsGrid = grid.map(row =>
-      row.map(node => ({
-        ...node,
-        isWall: true,
-        isVisited: false,
-        isPath: false,
-        isStart: node.row === startRow && node.col === startCol,
-        isEnd: node.row === finalTargetRow && node.col === finalTargetCol,
-      }))
-    );
-    setGrid(wallsGrid);
-
-    // Animate the wall removal (carving) process - optimized for performance
-    for (let i = 0; i < wallsToAnimate.length; i++) {
-      setTimeout(() => {
-        setGrid(prev => {
-          const updatedGrid = prev.map(row => [...row]);
-          const node = wallsToAnimate[i];
-          
-          if (updatedGrid[node.row] && updatedGrid[node.row][node.col]) {
-            updatedGrid[node.row][node.col].isWall = false;
-          }
-          
-          return updatedGrid;
-        });
-
-        // When animation is complete, finalize the grid state
-        if (i === wallsToAnimate.length - 1) {
-          setTimeout(() => {
-            // Ensure start and end are properly marked
-            setGrid(prev => {
-              const finalGrid = prev.map(row => [...row]);
-              finalGrid[startRow][startCol].isStart = true;
-              finalGrid[startRow][startCol].isWall = false;
-              finalGrid[finalTargetRow][finalTargetCol].isEnd = true;
-              finalGrid[finalTargetRow][finalTargetCol].isWall = false;
-              return finalGrid;
-            });
-            setIsRunning(false);
-          }, 30);
-        }
-      }, 5 * i); // Further optimized: 5ms per cell for smooth 60fps animation
-    }
+    const finalizeMazeState = () => {
+      gridRef.current[startRow][startCol].isStart = true;
+      gridRef.current[startRow][startCol].isWall = false;
+      gridRef.current[finalTargetRow][finalTargetCol].isEnd = true;
+      gridRef.current[finalTargetRow][finalTargetCol].isWall = false;
+      drawGridRef.current?.(gridRef.current);
+      setGrid(cloneGridForState(gridRef.current));
+      setIsRunning(false);
+    };
 
     if (wallsToAnimate.length === 0) {
-      setIsRunning(false);
+      finalizeMazeState();
+      return;
     }
+
+    let index = 0;
+    const wallsPerFrame = Math.max(8, Math.floor(70 - Math.min(speed, 60)));
+
+    const carveFrame = () => {
+      let carved = 0;
+      while (index < wallsToAnimate.length && carved < wallsPerFrame) {
+        const node = wallsToAnimate[index];
+        const current = gridRef.current[node.row]?.[node.col];
+        if (current) {
+          current.isWall = false;
+        }
+        index += 1;
+        carved += 1;
+      }
+
+      drawGridRef.current?.(gridRef.current);
+
+      if (index < wallsToAnimate.length) {
+        requestAnimationFrame(carveFrame);
+      } else {
+        finalizeMazeState();
+      }
+    };
+
+    requestAnimationFrame(carveFrame);
   };
 
 
@@ -361,9 +381,10 @@ export default function Home() {
       return;
     }
     setIsMousePressed(true);
-    // toggle wall
-    grid[row][col].isWall = !grid[row][col].isWall;
-    setGrid([...grid]);
+    const node = gridRef.current[row]?.[col];
+    if (!node) return;
+    node.isWall = !node.isWall;
+    drawGridRef.current?.(gridRef.current);
   };
 
   const handleMouseEnter = (row: number, col: number) => {
@@ -374,13 +395,16 @@ export default function Home() {
         row === 0 || col === 0 || row === NUM_ROWS - 1 || col === NUM_COLS - 1) {
       return;
     }
-    grid[row][col].isWall = !grid[row][col].isWall;
-    setGrid([...grid]);
+    const node = gridRef.current[row]?.[col];
+    if (!node) return;
+    node.isWall = !node.isWall;
+    drawGridRef.current?.(gridRef.current);
   };
 
   const handleMouseUp = () => {
     if (isRunning) return;
     setIsMousePressed(false);
+    setGrid(cloneGridForState(gridRef.current));
   };
 
   return (
@@ -408,6 +432,10 @@ export default function Home() {
               onMouseDown={handleMouseDown}
               onMouseEnter={handleMouseEnter}
               onMouseUp={handleMouseUp}
+              registerRenderer={(renderer) => {
+                drawGridRef.current = renderer;
+                renderer(gridRef.current);
+              }}
             />
           </div>
           <aside className="w-96 flex-shrink-0 flex flex-col gap-4 overflow-y-auto">
