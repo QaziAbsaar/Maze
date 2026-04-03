@@ -7,6 +7,10 @@ import { ControlPanel } from '@/components/ControlPanel';
 import { Dashboard } from '@/components/Dashboard';
 import { generateDFSMaze } from '@/utils/mazeGenerator';
 import { getSafeTargetCoordinates } from '@/utils/gridCoordinates';
+import { astar, getNodesInShortestPathOrder } from '@/algorithms/pathfinding/astar';
+import { dijkstra } from '@/algorithms/pathfinding/dijkstra';
+import { bfs } from '@/algorithms/pathfinding/bfs';
+import { dfs } from '@/algorithms/pathfinding/dfs';
 
 const NUM_ROWS = 31;
 const NUM_COLS = 61;
@@ -17,6 +21,8 @@ const START_NODE_COL = 1;
 
 // Target is at the bottom-right inner path (on odd coordinates) - calculated safely
 const { r: END_NODE_ROW, c: END_NODE_COL } = getSafeTargetCoordinates(NUM_ROWS, NUM_COLS);
+
+type NodeCoordinate = { row: number; col: number };
 
 export default function Home() {
   const [grid, setGrid] = useState<NodeData[][]>([]);
@@ -72,6 +78,50 @@ export default function Home() {
     setGrid(newGrid);
   };
 
+  const runPathfindingLocally = (
+    algorithm: string,
+    startNode: NodeCoordinate,
+    endNode: NodeCoordinate
+  ) => {
+    const simulationGrid = grid.map(row =>
+      row.map(node => ({
+        ...node,
+        isVisited: false,
+        isPath: false,
+        distance: Infinity,
+        previousNode: null,
+      }))
+    );
+
+    const start = simulationGrid[startNode.row]?.[startNode.col];
+    const end = simulationGrid[endNode.row]?.[endNode.col];
+
+    if (!start || !end) {
+      return { visitedNodesInOrder: [], pathNodes: [] };
+    }
+
+    let visitedNodesInOrder: NodeData[] = [];
+    if (algorithm === 'astar') {
+      visitedNodesInOrder = astar(simulationGrid, start, end);
+    } else if (algorithm === 'dijkstra') {
+      visitedNodesInOrder = dijkstra(simulationGrid, start, end);
+    } else if (algorithm === 'bfs') {
+      visitedNodesInOrder = bfs(simulationGrid, start, end);
+    } else {
+      visitedNodesInOrder = dfs(simulationGrid, start, end);
+    }
+
+    const pathNodesInOrder =
+      end.previousNode || (start.row === end.row && start.col === end.col)
+        ? getNodesInShortestPathOrder(end)
+        : [];
+
+    return {
+      visitedNodesInOrder: visitedNodesInOrder.map(node => ({ row: node.row, col: node.col })),
+      pathNodes: pathNodesInOrder.map(node => ({ row: node.row, col: node.col })),
+    };
+  };
+
   const handleRunAlgorithm = async () => {
     if (isRunning) return;
     clearPath();
@@ -86,34 +136,50 @@ export default function Home() {
     else if (selectedAlgo === 'dfs') algoName = 'Depth First Search';
 
     const startTime = performance.now();
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
 
     try {
-      const response = await fetch('http://localhost:8000/find-path', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          grid: grid.map(row => row.map(node => ({
-            row: node.row,
-            col: node.col,
-            isStart: node.isStart,
-            isEnd: node.isEnd,
-            isWall: node.isWall
-          }))),
-          startNode,
-          endNode,
-          algorithm: selectedAlgo
-        })
-      });
+      let visitedNodesInOrder: NodeCoordinate[] = [];
+      let pathNodes: NodeCoordinate[] = [];
 
-      const data = await response.json();
-      const visitedNodesInOrder = data.visitedNodes;
-      const pathNodes = data.pathNodes;
+      if (apiBaseUrl) {
+        const response = await fetch(`${apiBaseUrl}/find-path`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            grid: grid.map(row => row.map(node => ({
+              row: node.row,
+              col: node.col,
+              isStart: node.isStart,
+              isEnd: node.isEnd,
+              isWall: node.isWall
+            }))),
+            startNode,
+            endNode,
+            algorithm: selectedAlgo
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`Path API request failed with status ${response.status}`);
+        }
+
+        const data = await response.json();
+        visitedNodesInOrder = data.visitedNodes ?? [];
+        pathNodes = data.pathNodes ?? [];
+      } else {
+        const localResult = runPathfindingLocally(selectedAlgo, startNode, endNode);
+        visitedNodesInOrder = localResult.visitedNodesInOrder;
+        pathNodes = localResult.pathNodes;
+      }
       
       const execTime = Math.round(performance.now() - startTime);
       animateAlgorithm(visitedNodesInOrder, pathNodes, algoName, execTime);
     } catch (error) {
-      console.error('API Error:', error);
-      setIsRunning(false);
+      console.warn('Path API unavailable; using local pathfinding fallback.', error);
+      const localResult = runPathfindingLocally(selectedAlgo, startNode, endNode);
+      const execTime = Math.round(performance.now() - startTime);
+      animateAlgorithm(localResult.visitedNodesInOrder, localResult.pathNodes, algoName, execTime);
     }
   };
 
